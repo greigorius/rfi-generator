@@ -930,6 +930,8 @@ export default function RFIGenerator() {
             )}
           </>
         )}
+      </div>
+
       {exportRfi && <PrintView rfi={exportRfi} onClose={() => setExportRfi(null)} logoDataUrl={logoDataUrl} />}
     </div>
   );
