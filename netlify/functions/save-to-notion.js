@@ -67,6 +67,10 @@ exports.handler = async (event) => {
     "Date Raised": rfi.dateRaised
       ? { date: { start: rfi.dateRaised } }
       : undefined,
+    // Relation — links to the Tasks DB entry, which auto-populates the Project rollup
+    "Related Item(s)": rfi.relatedItemId
+      ? { relation: [{ id: rfi.relatedItemId }] }
+      : undefined,
   };
 
   // Remove undefined values (Notion API rejects them)

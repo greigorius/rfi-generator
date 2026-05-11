@@ -151,6 +151,7 @@ function NotionRfiItem({ rfi, closeState, onCloseOut }) {
           {rfi.rfiTitle || "Untitled"}
         </div>
         <div style={{ fontSize: 10, color: "#374151", fontFamily: "monospace", marginTop: 2 }}>
+          {rfi.project && <span style={{ color: "#60a5fa" }}>{rfi.project} · </span>}
           Raised: {rfi.dateRaised || "—"} · TBC: {rfi.tbcBy || "—"}
         </div>
         {state === "error" && (
@@ -416,6 +417,7 @@ export default function RFIGenerator() {
   const [notionRfis, setNotionRfis] = useState([]);
   const [notionRfisLoading, setNotionRfisLoading] = useState(false);
   const [closeOutState, setCloseOutState] = useState({});
+  const [queueProjectFilter, setQueueProjectFilter] = useState("");
 
   // Persist queue to localStorage
   useEffect(() => {
@@ -571,6 +573,14 @@ export default function RFIGenerator() {
   const selectedProject = projects.find(p => p.name === form.project);
   const canLoadItems = !!selectedProject?.id;
 
+  // Queue filter helpers
+  const queueProjects = [...new Set([
+    ...notionRfis.map(r => r.project).filter(Boolean),
+    ...queue.map(r => r.project).filter(Boolean),
+  ])].sort();
+  const filteredNotionRfis = queueProjectFilter ? notionRfis.filter(r => r.project === queueProjectFilter) : notionRfis;
+  const filteredQueue = queueProjectFilter ? queue.filter(r => r.project === queueProjectFilter) : queue;
+
   return (
     <div style={{ minHeight: "100vh", background: "#070c12", fontFamily: "'IBM Plex Mono', 'Courier New', monospace", color: "#e2eaf3" }}>
       <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -579,7 +589,26 @@ export default function RFIGenerator() {
       <div style={{ borderBottom: "1px solid #21303f", padding: "0 24px", display: "flex", alignItems: "stretch", justifyContent: "space-between", background: "#0d1117" }}>
         <div style={{ padding: "16px 0" }}>
           <div style={{ fontSize: 11, color: "#38bdf8", letterSpacing: 3, textTransform: "uppercase", fontWeight: 700 }}>◈ RFI GENERATOR</div>
-          <div style={{ fontSize: 10, color: "#374151", marginTop: 2, letterSpacing: 1 }}>Notion-linked · Draft Queue System</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 2 }}>
+            <span style={{ fontSize: 10, color: "#374151", letterSpacing: 1 }}>Notion-linked · Draft Queue System</span>
+            <button onClick={() => {
+              fetch("/.netlify/functions/get-projects")
+                .then(r => r.json())
+                .then(data => { if (data.projects?.length) setProjects(data.projects); })
+                .catch(() => {});
+              if (tab === "queue") {
+                setNotionRfisLoading(true);
+                fetch("/.netlify/functions/get-open-rfis")
+                  .then(r => r.json())
+                  .then(data => { setNotionRfis(data.rfis || []); setNotionRfisLoading(false); })
+                  .catch(() => setNotionRfisLoading(false));
+              }
+            }} title="Refresh Notion connection" style={{
+              background: "transparent", border: "1px solid #21303f", color: "#4a5568",
+              borderRadius: 3, padding: "2px 7px", fontSize: 9, fontFamily: "monospace",
+              cursor: "pointer", letterSpacing: 1, textTransform: "uppercase"
+            }}>↺ Refresh</button>
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {["form", "queue"].map(t => (
@@ -780,13 +809,35 @@ export default function RFIGenerator() {
 
         {tab === "queue" && (
           <>
-            {/* ── Notion Open RFIs ── */}
+            {/* Project Filter */}
+            {queueProjects.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10, color: "#4a5568", fontFamily: "monospace", letterSpacing: 1, textTransform: "uppercase", flexShrink: 0 }}>Filter:</span>
+                <button onClick={() => setQueueProjectFilter("")} style={{
+                  background: !queueProjectFilter ? "#0d1f33" : "transparent",
+                  border: `1px solid ${!queueProjectFilter ? "#38bdf8" : "#374151"}`,
+                  color: !queueProjectFilter ? "#38bdf8" : "#4a5568",
+                  borderRadius: 3, padding: "4px 10px", fontSize: 10, fontFamily: "monospace", cursor: "pointer",
+                }}>All</button>
+                {queueProjects.map(p => (
+                  <button key={p} onClick={() => setQueueProjectFilter(p === queueProjectFilter ? "" : p)} style={{
+                    background: queueProjectFilter === p ? "#0d1f33" : "transparent",
+                    border: `1px solid ${queueProjectFilter === p ? "#38bdf8" : "#374151"}`,
+                    color: queueProjectFilter === p ? "#38bdf8" : "#4a5568",
+                    borderRadius: 3, padding: "4px 10px", fontSize: 10, fontFamily: "monospace", cursor: "pointer",
+                    maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>{p}</button>
+                ))}
+              </div>
+            )}
+
+            {/* Notion Open RFIs - grouped by status */}
             <div style={{ marginBottom: 28 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#e2eaf3", letterSpacing: 1 }}>OPEN IN NOTION</div>
                   <div style={{ fontSize: 10, color: "#4a5568", marginTop: 2 }}>
-                    {notionRfisLoading ? "Fetching from Notion…" : notionRfis.length === 0 ? "No open RFIs in Notion" : `${notionRfis.length} RFI${notionRfis.length > 1 ? "s" : ""} open — Raise or Open status`}
+                    {notionRfisLoading ? "Fetching from Notion…" : filteredNotionRfis.length === 0 ? "No open RFIs" : `${filteredNotionRfis.length} RFI${filteredNotionRfis.length > 1 ? "s" : ""} — not closed`}
                   </div>
                 </div>
                 <button onClick={() => {
@@ -803,23 +854,44 @@ export default function RFIGenerator() {
               </div>
               {notionRfisLoading ? (
                 <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#374151", fontFamily: "monospace", letterSpacing: 2 }}>LOADING…</div>
-              ) : notionRfis.length === 0 ? (
+              ) : filteredNotionRfis.length === 0 ? (
                 <div style={{ border: "1px dashed #21303f", borderRadius: 4, padding: "20px 24px", textAlign: "center", color: "#374151", fontSize: 10, fontFamily: "monospace", letterSpacing: 1 }}>
-                  All clear — no open RFIs in Notion
+                  {notionRfis.length > 0 ? "No RFIs match the current filter" : "All clear — no open RFIs in Notion"}
                 </div>
               ) : (
-                notionRfis.map(rfi => (
-                  <NotionRfiItem key={rfi.notionId} rfi={rfi} closeState={closeOutState[rfi.notionId]} onCloseOut={handleCloseOut} />
-                ))
+                (() => {
+                  const knownOrder = ["Raise", "Open", "Close Out"];
+                  const extra = [...new Set(filteredNotionRfis.map(r => r.status).filter(s => !knownOrder.includes(s)))];
+                  const statusColors = { Raise: "#38bdf8", Open: "#4ade80", "Close Out": "#facc15" };
+                  return [...knownOrder, ...extra]
+                    .filter(status => filteredNotionRfis.some(r => r.status === status))
+                    .map(status => {
+                      const group = filteredNotionRfis.filter(r => r.status === status);
+                      const sc = statusColors[status] || "#94a3b8";
+                      return (
+                        <div key={status} style={{ marginBottom: 18 }}>
+                          <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", fontFamily: "monospace", marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ color: "#21303f" }}>──</span>
+                            <span style={{ color: sc, fontWeight: 700 }}>{status}</span>
+                            <span style={{ color: "#374151" }}>({group.length})</span>
+                            <span style={{ color: "#21303f", flex: 1 }}>{"─".repeat(30)}</span>
+                          </div>
+                          {group.map(rfi => (
+                            <NotionRfiItem key={rfi.notionId} rfi={rfi} closeState={closeOutState[rfi.notionId]} onCloseOut={handleCloseOut} />
+                          ))}
+                        </div>
+                      );
+                    });
+                })()
               )}
             </div>
 
-            {/* ── Draft Queue ── */}
+            {/* Draft Queue */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "#e2eaf3", letterSpacing: 1 }}>DRAFT QUEUE</div>
                 <div style={{ fontSize: 10, color: "#4a5568", marginTop: 2 }}>
-                  {queue.length === 0 ? "No drafts — create an RFI first" : `${queue.length} RFI${queue.length > 1 ? "s" : ""} ready to file or export`}
+                  {filteredQueue.length === 0 ? "No drafts" : `${filteredQueue.length} RFI${filteredQueue.length > 1 ? "s" : ""} ready to file or export`}
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
@@ -837,19 +909,19 @@ export default function RFIGenerator() {
                 }}>Open Notion DB</button>
               </div>
             </div>
-            {queue.length === 0 ? (
+            {filteredQueue.length === 0 ? (
               <div style={{ border: "1px dashed #21303f", borderRadius: 4, padding: "40px 24px", textAlign: "center", color: "#374151" }}>
                 <div style={{ fontSize: 36, marginBottom: 12 }}>◫</div>
-                <div style={{ fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>Queue is empty</div>
-                <div style={{ fontSize: 10, marginTop: 6 }}>Fill in the New RFI form and save to draft queue</div>
+                <div style={{ fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>{queue.length === 0 ? "Queue is empty" : "No drafts match filter"}</div>
+                <div style={{ fontSize: 10, marginTop: 6 }}>{queue.length === 0 ? "Fill in the New RFI form and save to draft queue" : "Try a different project filter"}</div>
               </div>
             ) : (
-              queue.map(rfi => (
+              filteredQueue.map(rfi => (
                 <DraftQueueItem key={rfi.id} rfi={rfi} onRemove={handleRemove} onExport={setExportRfi}
                   onEdit={handleEdit} notionStatus={notionState[rfi.id]} onFileToNotion={handleFileToNotion} />
               ))
             )}
-            {queue.length > 0 && (
+            {filteredQueue.length > 0 && (
               <div style={{ marginTop: 14, padding: "9px 12px", background: "#0d1117", border: "1px solid #21303f", borderRadius: 4 }}>
                 <div style={{ fontSize: 10, color: "#374151" }}>
                   <span style={{ color: "#818cf8" }}>Edit</span> to revise · <span style={{ color: "#60a5fa" }}>Export</span> for A4 PDF · <span style={{ color: "#4ade80" }}>→ Notion</span> files to database · <span style={{ color: "#4ade80" }}>↗ Open</span> jumps to filed page
@@ -858,8 +930,6 @@ export default function RFIGenerator() {
             )}
           </>
         )}
-      </div>
-
       {exportRfi && <PrintView rfi={exportRfi} onClose={() => setExportRfi(null)} logoDataUrl={logoDataUrl} />}
     </div>
   );
