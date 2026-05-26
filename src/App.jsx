@@ -441,10 +441,10 @@ export default function RFIGenerator() {
         }
         ctx.putImageData(imgData, 0, 0);
         setLogoDataUrl(canvas.toDataURL("image/png"));
-      } catch { setLogoDataUrl("/tmj-logo.png"); }
+      } catch { setLogoDataUrl("/TMJ-Logo.png"); }
     };
     img.onerror = () => setLogoDataUrl(null);
-    img.src = "/tmj-logo.png";
+    img.src = "/TMJ-Logo.png";
   }, []);
 
   // Fetch active projects from Notion on mount
