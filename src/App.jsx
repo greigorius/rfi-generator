@@ -286,7 +286,7 @@ function PrintView({ rfi, onClose, logoDataUrl }) {
     .image-area{width:100%;min-height:240px;border:1px solid #ddd;display:flex;align-items:center;justify-content:center;margin-bottom:20px;overflow:hidden;}
     .footer{display:flex;justify-content:space-between;font-size:9px;color:#aaa;border-top:1px solid #ddd;padding-top:10px;}
     .print-btn{position:fixed;top:16px;right:16px;}
-    @media print{html{background:white;}body{margin:0;padding:0;width:auto;}.print-btn{display:none;}}
+    @media print{html{background:white;}body{margin:0;padding:0;width:auto;min-height:0;}.print-btn{display:none;}}
   </style>
 </head>
 <body>
