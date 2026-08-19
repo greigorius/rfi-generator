@@ -126,20 +126,29 @@ exports.handler = async (event) => {
     });
   }
 
-  // Attachment reference (Notion file property requires hosted URLs, not data URIs;
-  // we note the filename so the team knows to upload manually if needed)
-  if (rfi.attachment) {
+  // Attachment references (Notion file property requires hosted URLs, not data URIs;
+  // we note the filenames so the team knows to upload manually if needed)
+  const attachments = Array.isArray(rfi.attachments)
+    ? rfi.attachments
+    : rfi.attachment ? [rfi.attachment] : [];
+
+  if (attachments.length) {
+    const summary = attachments.length === 1
+      ? `Attachment: ${attachments[0].name}${attachments[0].caption ? ` — ${attachments[0].caption}` : ""}`
+      : `${attachments.length} attachments:\n` + attachments
+          .map((a, i) => `${i + 1}. ${a.name}${a.caption ? ` — ${a.caption}` : ""}`)
+          .join("\n");
     children.push({
       type: "callout",
       callout: {
         rich_text: [
           {
             type: "text",
-            text: { content: `Attachment: ${rfi.attachment.name}` },
+            text: { content: summary },
           },
           {
             type: "text",
-            text: { content: " — upload to Snippets field manually" },
+            text: { content: "\n— upload to Snippets field manually" },
             annotations: { italic: true, color: "gray" },
           },
         ],

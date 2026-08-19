@@ -33,8 +33,28 @@ const makeInitialForm = () => ({
   source: "",
   urgency: "Medium",
   additionalNotes: "",
-  attachment: null,
+  attachments: [],
 });
+
+// Older drafts (in localStorage or in flight) stored a single `attachment`
+// object. Normalise everything to an `attachments` array so the rest of the
+// app only ever deals with one shape.
+const normaliseAttachments = (rfi) => {
+  if (!rfi) return rfi;
+  if (Array.isArray(rfi.attachments)) return rfi;
+  const { attachment, ...rest } = rfi;
+  return {
+    ...rest,
+    attachments: attachment ? [{ ...attachment, caption: attachment.caption || "" }] : [],
+  };
+};
+
+const isImageAttachment = (a) => !!(a && a.type && a.type.startsWith("image/"));
+
+// Escape user-entered text before it goes into the generated export HTML
+const esc = (s) => String(s ?? "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 const formatDateShort = (dateStr) => {
   if (!dateStr) return "";
@@ -57,7 +77,7 @@ function completionScore(form) {
   let score = 0;
   required.forEach(k => { if (form[k]) score += 14; });
   optional.forEach(k => { if (form[k]) score += 5; });
-  if (form.attachment) score += 8;
+  if (form.attachments?.length) score += 8;
   return Math.min(score, 100);
 }
 
@@ -206,7 +226,11 @@ function DraftQueueItem({ rfi, onRemove, onExport, onEdit, notionStatus, onFileT
           {rfi.project && <span style={{ color: "#60a5fa" }}>{rfi.project} · </span>}
           TBC: {rfi.tbcBy || "—"} · {rfi.dateRaised}
           {rfi.relatedItemName && <span style={{ color: "#818cf8" }}> · {rfi.relatedItemName}</span>}
-          {rfi.attachment && <span style={{ color: "#4a5568" }}> · 📎 {rfi.attachment.name}</span>}
+          {rfi.attachments?.length > 0 && (
+            <span style={{ color: "#4a5568" }}>
+              {" "}· 📎 {rfi.attachments.length === 1 ? rfi.attachments[0].name : `${rfi.attachments.length} attachments`}
+            </span>
+          )}
         </div>
         {ns.state === "error" && (
           <div style={{ fontSize: 10, color: "#f87171", fontFamily: "monospace", marginTop: 4 }}>
@@ -245,15 +269,33 @@ function DraftQueueItem({ rfi, onRemove, onExport, onEdit, notionStatus, onFileT
   );
 }
 
-function PrintView({ rfi, onClose, logoDataUrl }) {
+function PrintView({ rfi: rawRfi, onClose, logoDataUrl }) {
+  const rfi = normaliseAttachments(rawRfi);
   const rfiNum = String(rfi.rfiNumber).padStart(3, "0");
   const logoSrc = logoDataUrl || ("data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(TMJ_LOGO_SVG))));
-  const isImage = rfi.attachment && rfi.attachment.type && rfi.attachment.type.startsWith("image/");
-  const attachmentHtml = rfi.attachment
-    ? isImage
-      ? `<img src="${rfi.attachment.dataUrl}" alt="Attachment" style="max-width:100%;max-height:400px;object-fit:contain;display:block;"/>`
-      : `<div style="display:flex;align-items:center;gap:12px;padding:20px;font-family:Arial,sans-serif;"><span style="font-size:32px;">📎</span><div><div style="font-size:13px;font-weight:600;color:#333;">${rfi.attachment.name}</div><div style="font-size:10px;color:#999;margin-top:2px;text-transform:uppercase;letter-spacing:1px;">${rfi.attachment.type || "File"}</div></div></div>`
-    : `<span style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#ccc;">Image / Attachment Area</span>`;
+  const attachments = rfi.attachments || [];
+  const n = attachments.length;
+
+  // Smart auto-layout: 1 = full width, 2+ = 2-column grid (larger cells for a pair).
+  // Figures never split across a page break; overflow simply flows onto the next A4 page.
+  const gridCols = n === 1 ? 1 : 2;
+  const maxImgHeight = n === 1 ? 400 : n === 2 ? 300 : 185;
+
+  const figureHtml = (a, i) => {
+    const label = `Fig ${i + 1}`;
+    const caption = a.caption
+      ? `${label} — ${esc(a.caption)}`
+      : n > 1 ? `${label} — ${esc(a.name)}` : esc(a.caption || "");
+    const body = isImageAttachment(a)
+      ? `<img src="${a.dataUrl}" alt="${esc(a.caption || a.name)}" style="width:100%;max-height:${maxImgHeight}px;object-fit:contain;display:block;"/>`
+      : `<div class="file-card"><span style="font-size:28px;">📎</span><div><div style="font-size:12px;font-weight:600;color:#333;">${esc(a.name)}</div><div style="font-size:9px;color:#999;margin-top:2px;text-transform:uppercase;letter-spacing:1px;">${esc(a.type || "File")}</div></div></div>`;
+    return `<figure class="att-figure">${body}${caption ? `<figcaption>${caption}</figcaption>` : ""}</figure>`;
+  };
+
+  const attachmentHtml = n
+    ? `<div class="section-label">Attachment${n > 1 ? `s (${n})` : ""}</div>
+       <div class="att-grid cols-${gridCols}">${attachments.map(figureHtml).join("")}</div>`
+    : `<div class="image-area"><span style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#ccc;">Image / Attachment Area</span></div>`;
 
   const handleExportPDF = () => {
     const w = window.open("", "_blank");
@@ -284,6 +326,12 @@ function PrintView({ rfi, onClose, logoDataUrl }) {
     .description{font-size:13px;line-height:1.75;color:#222;margin-bottom:26px;padding-bottom:22px;border-bottom:1px solid #eee;}
     .notes-box{font-size:12px;line-height:1.65;color:#444;background:#f9f9f9;border:1px solid #e8e8e8;padding:12px 14px;margin-bottom:24px;}
     .image-area{width:100%;min-height:240px;border:1px solid #ddd;display:flex;align-items:center;justify-content:center;margin-bottom:20px;overflow:hidden;}
+    .att-grid{display:grid;gap:12px;margin-bottom:20px;}
+    .att-grid.cols-1{grid-template-columns:1fr;}
+    .att-grid.cols-2{grid-template-columns:1fr 1fr;}
+    .att-figure{border:1px solid #ddd;padding:6px;background:#fff;break-inside:avoid;page-break-inside:avoid;overflow:hidden;}
+    .att-figure figcaption{font-size:9.5px;color:#666;margin-top:6px;padding:0 2px;line-height:1.4;word-wrap:break-word;}
+    .file-card{display:flex;align-items:center;gap:12px;padding:18px 14px;}
     .footer{display:flex;justify-content:space-between;font-size:9px;color:#aaa;border-top:1px solid #ddd;padding-top:10px;}
     .print-btn{position:fixed;top:16px;right:16px;}
     @media print{html{background:white;}body{margin:0;padding:0;width:auto;min-height:0;}.print-btn{display:none;}}
@@ -309,11 +357,48 @@ function PrintView({ rfi, onClose, logoDataUrl }) {
   <div class="section-label">Description</div>
   <div class="description">${rfi.description || "—"}</div>
   ${rfi.additionalNotes ? `<div class="section-label">Additional Notes</div><div class="notes-box">${rfi.additionalNotes}</div>` : ""}
-  <div class="image-area">${attachmentHtml}</div>
+  ${attachmentHtml}
   <div class="footer">
     <span>Generated ${new Date().toLocaleDateString("en-GB")}</span>
     <span>RFI-${rfiNum} · TMJ Interiors · DRAFT — NOT FOR CONSTRUCTION</span>
   </div>
+  <script>
+  /* Fit-to-page: if the sheet overflows A4 by a small amount, shrink the attachment
+     images just enough to pull it back onto one page. Without this a tall screenshot
+     pushes the footer alone onto a second, near-blank sheet. Only shrinks when doing
+     so actually achieves a single page — genuinely long documents page normally. */
+  (function () {
+    var AVAIL = (297 - 30) / 25.4 * 96;  // A4 height less the 15mm top/bottom @page margins
+    var MIN = 140;                        // never shrink an image below this
+    function run() {
+      var imgs = document.querySelectorAll(".att-figure img");
+      if (!imgs.length) return;
+      var kids = [];
+      for (var i = 0; i < document.body.children.length; i++) {
+        var el = document.body.children[i];
+        if (el.tagName !== "SCRIPT" && String(el.className).indexOf("print-btn") === -1) kids.push(el);
+      }
+      if (!kids.length) return;
+      function height() {
+        return kids[kids.length - 1].getBoundingClientRect().bottom - kids[0].getBoundingClientRect().top;
+      }
+      function set(v) { for (var i = 0; i < imgs.length; i++) imgs[i].style.maxHeight = v + "px"; }
+      var start = parseFloat(getComputedStyle(imgs[0]).maxHeight) || 400;
+      if (height() <= AVAIL) return;               // already fits
+      set(MIN);
+      if (height() > AVAIL) { set(start); return; } // can't fit either way — leave it alone
+      var lo = MIN, hi = start;
+      while (hi - lo > 2) {
+        var mid = (lo + hi) / 2;
+        set(mid);
+        if (height() <= AVAIL) lo = mid; else hi = mid;
+      }
+      set(Math.floor(lo));
+    }
+    if (document.readyState === "complete") run();
+    else window.addEventListener("load", run);
+  })();
+  <\/script>
 </body>
 </html>`;
     w.document.write(html);
@@ -360,20 +445,38 @@ function PrintView({ rfi, onClose, logoDataUrl }) {
                 <div style={{ fontSize: 10, lineHeight: 1.6, color: "#444", background: "#f9f9f9", border: "1px solid #eee", padding: "7px 10px", marginBottom: 12 }}>{rfi.additionalNotes}</div>
               </>
             )}
-            <div style={{ width: "100%", minHeight: 80, border: "1px solid #ddd", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", marginBottom: 12 }}>
-              {rfi.attachment
-                ? isImage
-                  ? <img src={rfi.attachment.dataUrl} alt="attachment" style={{ maxWidth: "100%", maxHeight: 140, objectFit: "contain" }} />
-                  : <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 12 }}>
-                      <span style={{ fontSize: 24 }}>📎</span>
-                      <div>
-                        <div style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>{rfi.attachment.name}</div>
-                        <div style={{ fontSize: 9, color: "#999", marginTop: 2, textTransform: "uppercase", letterSpacing: 1 }}>{rfi.attachment.type || "File"}</div>
-                      </div>
+            {n > 0 ? (
+              <>
+                <div style={{ fontSize: 7, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: "#999", marginBottom: 5 }}>
+                  Attachment{n > 1 ? `s (${n})` : ""}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: `repeat(${gridCols}, 1fr)`, gap: 8, marginBottom: 12 }}>
+                  {attachments.map((a, i) => (
+                    <div key={i} style={{ border: "1px solid #ddd", padding: 4, overflow: "hidden" }}>
+                      {isImageAttachment(a)
+                        ? <img src={a.dataUrl} alt={a.caption || a.name} style={{ width: "100%", maxHeight: n === 1 ? 150 : 100, objectFit: "contain", display: "block" }} />
+                        : <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 10 }}>
+                            <span style={{ fontSize: 20 }}>📎</span>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 10, fontWeight: 600, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
+                              <div style={{ fontSize: 8, color: "#999", marginTop: 2, textTransform: "uppercase", letterSpacing: 1 }}>{a.type || "File"}</div>
+                            </div>
+                          </div>
+                      }
+                      {(a.caption || n > 1) && (
+                        <div style={{ fontSize: 8, color: "#666", marginTop: 4, lineHeight: 1.4, wordBreak: "break-word" }}>
+                          Fig {i + 1} — {a.caption || a.name}
+                        </div>
+                      )}
                     </div>
-                : <span style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: "#ccc" }}>Image / Attachment Area</span>
-              }
-            </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div style={{ width: "100%", minHeight: 80, border: "1px solid #ddd", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", marginBottom: 12 }}>
+                <span style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: "#ccc" }}>Image / Attachment Area</span>
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#bbb", borderTop: "1px solid #eee", paddingTop: 7 }}>
               <span>Generated {new Date().toLocaleDateString("en-GB")}</span>
               <span>RFI-{rfiNum} · TMJ Interiors · DRAFT</span>
@@ -386,7 +489,7 @@ function PrintView({ rfi, onClose, logoDataUrl }) {
           }}>Open A4 Export — Print or Save as PDF</button>
           <div style={{ marginTop: 10, padding: "8px 12px", background: "#0d1117", border: "1px solid #21303f", borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: "#374151" }}>
-              In the export window use <span style={{ color: "#60a5fa" }}>Print</span> (Cmd+P / Ctrl+P) → <span style={{ color: "#60a5fa" }}>Save as PDF</span> · Paper: A4 · Margins: None
+              In the export window use <span style={{ color: "#60a5fa" }}>Print</span> (Cmd+P / Ctrl+P) → <span style={{ color: "#60a5fa" }}>Save as PDF</span> · Paper: A4 · Margins: Default (the page sets its own 15mm margins)
             </div>
           </div>
         </div>
@@ -399,7 +502,10 @@ export default function RFIGenerator() {
   const [form, setForm] = useState(makeInitialForm());
   const [notionState, setNotionState] = useState({});
   const [queue, setQueue] = useState(() => {
-    try { const s = localStorage.getItem("rfi-queue"); return s ? JSON.parse(s) : []; } catch { return []; }
+    try {
+      const s = localStorage.getItem("rfi-queue");
+      return s ? JSON.parse(s).map(normaliseAttachments) : [];
+    } catch { return []; }
   });
   const [tab, setTab] = useState("form");
   const [exportRfi, setExportRfi] = useState(null);
@@ -503,7 +609,7 @@ export default function RFIGenerator() {
   };
 
   const handleEdit = (rfi) => {
-    setForm({ ...rfi });
+    setForm({ ...makeInitialForm(), ...normaliseAttachments(rfi) });
     setEditingId(rfi.id);
     setQueue(q => q.filter(r => r.id !== rfi.id));
     setTab("form");
@@ -514,7 +620,11 @@ export default function RFIGenerator() {
   const handleFileToNotion = async (rfi) => {
     setNotionState(s => ({ ...s, [rfi.id]: { state: "loading" } }));
     try {
-      const payload = { ...rfi, attachment: rfi.attachment ? { name: rfi.attachment.name, type: rfi.attachment.type } : null };
+      // Strip the data URLs — Notion only gets the filenames/captions as a reference
+      const payload = {
+        ...rfi,
+        attachments: (rfi.attachments || []).map(a => ({ name: a.name, type: a.type, caption: a.caption || "" })),
+      };
       const res = await fetch("/.netlify/functions/save-to-notion", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
       });
@@ -544,13 +654,32 @@ export default function RFIGenerator() {
     }
   };
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  const addAttachments = (items) =>
+    setForm(f => ({ ...f, attachments: [...(f.attachments || []), ...items] }));
+
+  const removeAttachment = (idx) =>
+    setForm(f => ({ ...f, attachments: f.attachments.filter((_, i) => i !== idx) }));
+
+  const setAttachmentCaption = (idx, caption) =>
+    setForm(f => ({ ...f, attachments: f.attachments.map((a, i) => i === idx ? { ...a, caption } : a) }));
+
+  const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = ev => set("attachment", { name: file.name, type: file.type, dataUrl: ev.target.result });
+    reader.onload = ev => resolve({ name: file.name, type: file.type, dataUrl: ev.target.result, caption: "" });
+    reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+
+  const handleFileUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
     e.target.value = "";
+    if (!files.length) return;
+    try {
+      const read = await Promise.all(files.map(readFileAsDataUrl));
+      addAttachments(read);
+    } catch {
+      alert("Could not read one or more of those files.");
+    }
   };
 
   const handleScreenCapture = async () => {
@@ -563,13 +692,19 @@ export default function RFIGenerator() {
       canvas.width = video.videoWidth; canvas.height = video.videoHeight;
       canvas.getContext("2d").drawImage(video, 0, 0);
       stream.getTracks().forEach(t => t.stop());
-      set("attachment", { name: "screenshot.png", type: "image/png", dataUrl: canvas.toDataURL("image/png") });
+      const count = (form.attachments?.length || 0) + 1;
+      addAttachments([{
+        name: `screenshot-${count}.png`,
+        type: "image/png",
+        dataUrl: canvas.toDataURL("image/png"),
+        caption: "",
+      }]);
     } catch {
       alert("Screen capture requires browser permission. Try file upload instead.");
     }
   };
 
-  const isAttachmentImage = form.attachment && form.attachment.type && form.attachment.type.startsWith("image/");
+  const attachments = form.attachments || [];
   const selectedProject = projects.find(p => p.name === form.project);
   const canLoadItems = !!selectedProject?.id;
 
@@ -754,27 +889,65 @@ export default function RFIGenerator() {
                   background: "#0d1117", border: "1px dashed #374151", color: "#6b7280",
                   borderRadius: 4, padding: "16px", fontSize: 11, fontWeight: 700,
                   fontFamily: "monospace", cursor: "pointer", letterSpacing: 1, textTransform: "uppercase"
-                }}>⊕ Upload File / Image</button>
+                }}>⊕ Upload Files / Images</button>
               </div>
-              <input ref={fileInputRef} type="file" accept="*/*" style={{ display: "none" }} onChange={handleFileUpload} />
-              {form.attachment && (
-                <div style={{ position: "relative", border: "1px solid #21303f", borderRadius: 4, overflow: "hidden" }}>
-                  {isAttachmentImage
-                    ? <img src={form.attachment.dataUrl} alt="attachment" style={{ width: "100%", display: "block" }} />
-                    : <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 12, background: "#0d1117" }}>
-                        <span style={{ fontSize: 28 }}>📎</span>
-                        <div>
-                          <div style={{ fontSize: 12, color: "#e2eaf3", fontFamily: "monospace", fontWeight: 700 }}>{form.attachment.name}</div>
-                          <div style={{ fontSize: 10, color: "#4a5568", fontFamily: "monospace", marginTop: 2, textTransform: "uppercase", letterSpacing: 1 }}>{form.attachment.type || "File"}</div>
+              <input ref={fileInputRef} type="file" accept="*/*" multiple style={{ display: "none" }} onChange={handleFileUpload} />
+
+              {attachments.length > 0 && (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <span style={{ fontSize: 10, color: "#4a5568", fontFamily: "monospace", letterSpacing: 1, textTransform: "uppercase" }}>
+                      {attachments.length} attached · exports as {attachments.length === 1 ? "full width" : attachments.length === 2 ? "side by side" : "2-column grid"}
+                    </span>
+                    <button onClick={() => set("attachments", [])} style={{
+                      background: "transparent", border: "1px solid #374151", color: "#6b7280",
+                      borderRadius: 3, padding: "3px 8px", fontSize: 9, cursor: "pointer",
+                      fontFamily: "monospace", letterSpacing: 1, textTransform: "uppercase"
+                    }}>Clear all</button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 10 }}>
+                    {attachments.map((a, i) => (
+                      <div key={i} style={{ border: "1px solid #21303f", borderRadius: 4, overflow: "hidden", background: "#0d1117" }}>
+                        <div style={{ position: "relative" }}>
+                          {isImageAttachment(a)
+                            ? <img src={a.dataUrl} alt={a.name} style={{ width: "100%", height: 120, objectFit: "cover", display: "block" }} />
+                            : <div style={{ padding: "18px 14px", display: "flex", alignItems: "center", gap: 10, height: 120, boxSizing: "border-box" }}>
+                                <span style={{ fontSize: 24 }}>📎</span>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 11, color: "#e2eaf3", fontFamily: "monospace", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
+                                  <div style={{ fontSize: 9, color: "#4a5568", fontFamily: "monospace", marginTop: 2, textTransform: "uppercase", letterSpacing: 1 }}>{a.type || "File"}</div>
+                                </div>
+                              </div>
+                          }
+                          <span style={{
+                            position: "absolute", top: 6, left: 6, background: "#0d1117dd",
+                            border: "1px solid #21303f", color: "#38bdf8", borderRadius: 3,
+                            padding: "2px 6px", fontSize: 9, fontFamily: "monospace", fontWeight: 700
+                          }}>FIG {i + 1}</span>
+                          <button onClick={() => removeAttachment(i)} title="Remove" style={{
+                            position: "absolute", top: 6, right: 6, background: "#0d1117dd",
+                            border: "1px solid #374151", color: "#f87171", borderRadius: 3,
+                            padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "monospace", fontWeight: 700
+                          }}>✕</button>
                         </div>
+                        <input
+                          value={a.caption || ""}
+                          onChange={e => setAttachmentCaption(i, e.target.value)}
+                          placeholder="Caption (optional)…"
+                          style={{
+                            ...inputStyle, border: "none", borderTop: "1px solid #21303f",
+                            borderRadius: 0, fontSize: 11, padding: "7px 9px", background: "#070c12",
+                          }}
+                        />
+                        {!a.caption && (
+                          <div style={{ fontSize: 9, color: "#374151", fontFamily: "monospace", padding: "0 9px 7px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            defaults to {a.name}
+                          </div>
+                        )}
                       </div>
-                  }
-                  <button onClick={() => set("attachment", null)} style={{
-                    position: "absolute", top: 8, right: 8, background: "#0d1117cc",
-                    border: "1px solid #374151", color: "#f87171", borderRadius: 3,
-                    padding: "4px 8px", fontSize: 11, cursor: "pointer", fontFamily: "monospace", fontWeight: 700
-                  }}>✕ Remove</button>
-                </div>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
 
