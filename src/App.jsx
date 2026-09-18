@@ -146,10 +146,11 @@ function ScoreBar({ score }) {
   );
 }
 
-function NotionRfiItem({ rfi, closeState, onCloseOut }) {
+function NotionRfiItem({ rfi, closeState, onCloseOut, onRespond, responded }) {
   const state = closeState || "idle";
   const closed = state === "closed";
   const closing = state === "loading";
+  const hasResponse = responded || rfi.hasResponse;
   return (
     <div style={{
       background: "#0d1117",
@@ -165,6 +166,7 @@ function NotionRfiItem({ rfi, closeState, onCloseOut }) {
           </span>
           <Badge color="#94a3b8">{rfi.status}</Badge>
           {rfi.tbcBy && <Badge color="#818cf8">{rfi.tbcBy}</Badge>}
+          {hasResponse && <Badge color="#38bdf8">✓ Response</Badge>}
           {closed && <Badge color="#4ade80">✓ Closed</Badge>}
         </div>
         <div style={{ fontSize: 12, color: "#e2eaf3", fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -173,6 +175,7 @@ function NotionRfiItem({ rfi, closeState, onCloseOut }) {
         <div style={{ fontSize: 10, color: "#374151", fontFamily: "monospace", marginTop: 2 }}>
           {rfi.project && <span style={{ color: "#60a5fa" }}>{rfi.project} · </span>}
           Raised: {rfi.dateRaised || "—"} · TBC: {rfi.tbcBy || "—"}
+          {rfi.dateResponded && <span style={{ color: "#38bdf8" }}> · Responded: {rfi.dateResponded}</span>}
         </div>
         {state === "error" && (
           <div style={{ fontSize: 10, color: "#f87171", fontFamily: "monospace", marginTop: 3 }}>✕ Failed to close — check integration</div>
@@ -184,6 +187,13 @@ function NotionRfiItem({ rfi, closeState, onCloseOut }) {
           borderRadius: 3, padding: "5px 10px", fontSize: 10, fontWeight: 700,
           fontFamily: "monospace", cursor: "pointer", letterSpacing: 1, textTransform: "uppercase"
         }}>View ↗</button>
+        <button onClick={() => onRespond(rfi)} title="Record the consultant's reply" style={{
+          background: hasResponse ? "#0d2430" : "#0d1f33",
+          border: `1px solid ${hasResponse ? "#38bdf8" : "#38bdf855"}`,
+          color: hasResponse ? "#38bdf8" : "#38bdf8aa",
+          borderRadius: 3, padding: "5px 10px", fontSize: 10, fontWeight: 700,
+          fontFamily: "monospace", cursor: "pointer", letterSpacing: 1, textTransform: "uppercase"
+        }}>{hasResponse ? "✎ Response" : "+ Response"}</button>
         <button onClick={() => !closing && !closed && onCloseOut(rfi)} disabled={closing || closed} style={{
           background: closed ? "#1a2e1a" : "#1a0a0a",
           border: `1px solid ${closed ? "#16a34a" : "#dc262655"}`,
@@ -498,6 +508,166 @@ function PrintView({ rfi: rawRfi, onClose, logoDataUrl }) {
   );
 }
 
+// Netlify's synchronous functions accept roughly 6MB of request body, and base64
+// inflates a file by about a third — so cap the raw total well under that.
+const RESPONSE_UPLOAD_LIMIT = 4 * 1024 * 1024;
+
+function ResponseModal({ rfi, onClose, onSaved }) {
+  const [text, setText] = useState("");
+  const [respondedBy, setRespondedBy] = useState(rfi.tbcBy || "");
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [docs, setDocs] = useState([]);
+  const [state, setState] = useState({ kind: "idle" });
+  const fileRef = useRef();
+
+  const totalBytes = docs.reduce((n, d) => n + d.bytes, 0);
+  const overLimit = totalBytes > RESPONSE_UPLOAD_LIMIT;
+  const canSave = (text.trim() || docs.length) && !overLimit && state.kind !== "saving";
+
+  const addFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    const read = await Promise.all(files.map(file => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = ev => resolve({ name: file.name, type: file.type, bytes: file.size, dataUrl: ev.target.result });
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    })));
+    setDocs(d => [...d, ...read]);
+  };
+
+  const save = async () => {
+    setState({ kind: "saving" });
+    try {
+      const res = await fetch("/.netlify/functions/save-response", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notionId: rfi.notionId,
+          rfiNumber: rfi.rfiNumber,
+          response: text,
+          respondedBy,
+          dateResponded: date,
+          attachments: docs.map(d => ({ name: d.name, type: d.type, dataUrl: d.dataUrl })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setState({ kind: "error", message: data.error || `Failed (HTTP ${res.status})` }); return; }
+      setState({ kind: "saved", warnings: data.warnings || [], attached: data.attached || 0 });
+      onSaved(rfi.notionId);
+      if (!(data.warnings || []).length) setTimeout(onClose, 1400);
+    } catch {
+      setState({ kind: "error", message: "Network error — is the app deployed?" });
+    }
+  };
+
+  const kb = n => n > 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000000cc", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: "#111827", border: "1px solid #21303f", borderRadius: 6, width: "100%", maxWidth: 620, maxHeight: "92vh", overflow: "auto" }}>
+        <div style={{ padding: "14px 20px", borderBottom: "1px solid #21303f", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#e2eaf3", fontSize: 13, letterSpacing: 1 }}>
+              RESPONSE — RFI-{String(rfi.rfiNumber || "?").padStart(3, "0")}
+            </span>
+            <div style={{ fontSize: 10, color: "#4a5568", fontFamily: "monospace", marginTop: 3, maxWidth: 440, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {rfi.rfiTitle || "Untitled"}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#4a5568", cursor: "pointer", fontSize: 18 }}>✕</button>
+        </div>
+
+        <div style={{ padding: 20 }}>
+          <Field label="Response" required hint="paste the email text">
+            <textarea value={text} onChange={e => setText(e.target.value)} rows={9} autoFocus
+              placeholder="Paste the consultant's reply here…"
+              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.6, fontSize: 12 }} />
+          </Field>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Responded By">
+              <SelectField value={respondedBy} onChange={setRespondedBy} options={TBC_OPTIONS} placeholder="Who replied?" />
+            </Field>
+            <Field label="Date Responded">
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+
+          <Field label="Supporting Documents" hint="uploaded straight into Notion">
+            <button onClick={() => fileRef.current.click()} style={{
+              width: "100%", background: "#0d1117", border: "1px dashed #374151", color: "#6b7280",
+              borderRadius: 4, padding: "14px", fontSize: 11, fontWeight: 700,
+              fontFamily: "monospace", cursor: "pointer", letterSpacing: 1, textTransform: "uppercase"
+            }}>⊕ Attach Files</button>
+            <input ref={fileRef} type="file" multiple style={{ display: "none" }} onChange={addFiles} />
+            {docs.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                {docs.map((d, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "7px 10px", marginBottom: 4,
+                    background: "#0d1117", border: "1px solid #21303f", borderRadius: 3,
+                  }}>
+                    <span style={{ fontSize: 14 }}>📎</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, color: "#e2eaf3", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+                      <div style={{ fontSize: 9, color: "#4a5568", fontFamily: "monospace", marginTop: 1 }}>{kb(d.bytes)}</div>
+                    </div>
+                    <button onClick={() => setDocs(list => list.filter((_, j) => j !== i))} title="Remove" style={{
+                      background: "transparent", border: "1px solid #374151", color: "#f87171",
+                      borderRadius: 3, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "monospace", fontWeight: 700
+                    }}>✕</button>
+                  </div>
+                ))}
+                <div style={{ fontSize: 9, fontFamily: "monospace", color: overLimit ? "#f87171" : "#374151", marginTop: 4 }}>
+                  {kb(totalBytes)} total{overLimit ? ` — over the ${kb(RESPONSE_UPLOAD_LIMIT)} limit, remove something or attach it in Notion directly` : ""}
+                </div>
+              </div>
+            )}
+          </Field>
+
+          {state.kind === "error" && (
+            <div style={{ padding: "9px 12px", background: "#1a0a0a", border: "1px solid #dc262655", borderRadius: 4, marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "#f87171", fontFamily: "monospace" }}>✕ {state.message}</div>
+            </div>
+          )}
+          {state.kind === "saved" && (
+            <div style={{ padding: "9px 12px", background: "#0a1a0a", border: "1px solid #16a34a55", borderRadius: 4, marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "#4ade80", fontFamily: "monospace" }}>
+                ✓ Saved to Notion · status set to Close Out{state.attached ? ` · ${state.attached} file${state.attached > 1 ? "s" : ""} attached` : ""}
+              </div>
+              {state.warnings.map((w, i) => (
+                <div key={i} style={{ fontSize: 10, color: "#facc15", fontFamily: "monospace", marginTop: 4 }}>! {w}</div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <button onClick={onClose} style={{
+              background: "#0d1117", border: "1px solid #374151", color: "#6b7280",
+              borderRadius: 4, padding: "13px", fontSize: 12, fontWeight: 700,
+              fontFamily: "monospace", cursor: "pointer", letterSpacing: 1.5, textTransform: "uppercase"
+            }}>{state.kind === "saved" ? "Close" : "Cancel"}</button>
+            <button onClick={() => canSave && save()} disabled={!canSave} style={{
+              background: canSave ? "#0d1f33" : "#0d1117",
+              border: `1px solid ${canSave ? "#38bdf8" : "#21303f"}`,
+              color: canSave ? "#38bdf8" : "#374151",
+              borderRadius: 4, padding: "13px", fontSize: 12, fontWeight: 700,
+              fontFamily: "monospace", cursor: canSave ? "pointer" : "default", letterSpacing: 1.5, textTransform: "uppercase"
+            }}>{state.kind === "saving" ? "Saving…" : "→ Save Response"}</button>
+          </div>
+          <div style={{ marginTop: 10, padding: "8px 12px", background: "#0d1117", border: "1px solid #21303f", borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: "#374151" }}>
+              Writes Response, Responded By and Date Responded · full text also added to the RFI page · status moves to Close Out
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RFIGenerator() {
   const [form, setForm] = useState(makeInitialForm());
   const [notionState, setNotionState] = useState({});
@@ -523,6 +693,9 @@ export default function RFIGenerator() {
   const [notionRfis, setNotionRfis] = useState([]);
   const [notionRfisLoading, setNotionRfisLoading] = useState(false);
   const [closeOutState, setCloseOutState] = useState({});
+  // RFI currently open in the response modal, and the ids responded to this session
+  const [respondRfi, setRespondRfi] = useState(null);
+  const [respondedIds, setRespondedIds] = useState({});
   const [queueProjectFilter, setQueueProjectFilter] = useState("");
 
   // Persist queue to localStorage
@@ -641,7 +814,7 @@ export default function RFIGenerator() {
     try {
       const res = await fetch("/.netlify/functions/update-rfi", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notionId: notionRfi.notionId }),
+        body: JSON.stringify({ notionId: notionRfi.notionId, rfiNumber: notionRfi.rfiNumber }),
       });
       if (res.ok) {
         setCloseOutState(s => ({ ...s, [notionRfi.notionId]: "closed" }));
@@ -1050,7 +1223,14 @@ export default function RFIGenerator() {
                             <span style={{ color: "#21303f", flex: 1 }}>{"─".repeat(30)}</span>
                           </div>
                           {group.map(rfi => (
-                            <NotionRfiItem key={rfi.notionId} rfi={rfi} closeState={closeOutState[rfi.notionId]} onCloseOut={handleCloseOut} />
+                            <NotionRfiItem
+                              key={rfi.notionId}
+                              rfi={rfi}
+                              closeState={closeOutState[rfi.notionId]}
+                              onCloseOut={handleCloseOut}
+                              onRespond={setRespondRfi}
+                              responded={!!respondedIds[rfi.notionId]}
+                            />
                           ))}
                         </div>
                       );
@@ -1106,6 +1286,19 @@ export default function RFIGenerator() {
       </div>
 
       {exportRfi && <PrintView rfi={exportRfi} onClose={() => setExportRfi(null)} logoDataUrl={logoDataUrl} />}
+      {respondRfi && (
+        <ResponseModal
+          rfi={respondRfi}
+          onClose={() => setRespondRfi(null)}
+          onSaved={(id) => {
+            setRespondedIds(m => ({ ...m, [id]: true }));
+            // Reflect the new status/date without a full refetch
+            setNotionRfis(list => list.map(r => r.notionId === id
+              ? { ...r, status: "Close Out", hasResponse: true, dateResponded: new Date().toISOString().split("T")[0] }
+              : r));
+          }}
+        />
+      )}
     </div>
   );
 }

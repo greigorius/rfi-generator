@@ -2,8 +2,11 @@
 // Required env vars (set in Netlify dashboard → Site settings → Environment variables):
 //   NOTION_TOKEN      — your Notion integration secret (starts with "secret_...")
 //   NOTION_DB_RFIS    — the RFI database ID: 22d210e4582e80189f63f2cee93be4b3
+// Optional:
+//   NOTION_DB_ACTIVITY_LOG — Item Activity Log DB; raising an RFI posts a #query entry
 
 const NOTION_VERSION = "2022-06-28";
+const { createActivityLogEntry, rfiRef } = require("./_activity-log");
 
 exports.handler = async (event) => {
   // CORS headers so the browser can call this from any origin during local dev
@@ -184,6 +187,19 @@ exports.handler = async (event) => {
         body: JSON.stringify({ error: data.message || "Notion API error" }),
       };
     }
+
+    // Post to the Item Activity Log. The related item is already to hand from the form,
+    // so no extra lookup is needed. Awaited deliberately — see the note in _activity-log.js.
+    await createActivityLogEntry(token, {
+      taskId: rfi.relatedItemId || null,
+      source: "RFI",
+      tag:    "#query",
+      author: "DM",
+      entry:  `${rfiRef(rfi.rfiNumber)} raised — ${rfi.rfiTitle || rfi.description || "no subject"}.`
+              + (rfi.tbcBy ? ` TBC by ${rfi.tbcBy}.` : ""),
+      detail: rfi.description || "",
+      link:   data.url,
+    });
 
     return {
       statusCode: 200,

@@ -28,6 +28,9 @@ exports.handler = async (event) => {
       const project = rollupArr[0]?.title?.[0]?.plain_text
         || rollupArr[0]?.rich_text?.[0]?.plain_text
         || "";
+      const responseText = (p.properties["Response"]?.rich_text || [])
+        .map(t => t.plain_text).join("");
+
       return {
         notionId:  p.id,
         notionUrl: p.url,
@@ -37,6 +40,10 @@ exports.handler = async (event) => {
         tbcBy:     p.properties["TBC by"]?.select?.name || "",
         dateRaised: p.properties["Date Raised"]?.date?.start || "",
         project,
+        // Response state — lets the queue show what has already been answered
+        hasResponse:  !!responseText || (p.properties["Response Attachments"]?.files || []).length > 0,
+        dateResponded: p.properties["Date Responded"]?.date?.start || "",
+        respondedBy:   p.properties["Responded By"]?.select?.name || "",
       };
     });
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rfis }) };
