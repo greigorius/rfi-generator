@@ -7,8 +7,11 @@ echo   RFI Generator — Push to GitHub
 echo  ================================================
 echo.
 :: ── Prompt for commit message (press Enter to use default) ──────────────────
-for /f "tokens=2 delims==" %%i in ('wmic os get localdatetime /value') do set DT=%%i
-set DEFAULT_MSG=Update %DT:~0,4%-%DT:~4,2%-%DT:~6,2% %DT:~8,2%:%DT:~10,2%
+:: wmic was removed in Windows 11 24H2, which left DT empty and produced commit
+:: messages like "Update ~0,4DT:~4,2DT:...". PowerShell, with %date% as a fallback.
+for /f "delims=" %%i in ('powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm'"') do set "STAMP=%%i"
+if not defined STAMP set "STAMP=%date% %time:~0,5%"
+set "DEFAULT_MSG=Update %STAMP%"
 echo  Press Enter to use default: "%DEFAULT_MSG%"
 set /p COMMIT_MSG=Enter commit message (or press Enter):
 if "%COMMIT_MSG%"=="" set COMMIT_MSG=%DEFAULT_MSG%

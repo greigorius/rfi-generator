@@ -14,7 +14,7 @@
 //                    NOTION_DB_ACTIVITY_LOG  (saving a response posts a #response entry)
 
 const NOTION_VERSION = "2022-06-28";
-const { createActivityLogEntry, getRelatedTaskId, rfiRef } = require("./_activity-log");
+const { createActivityLogEntry, getRfiContext, rfiLabel } = require("./_activity-log");
 
 // Notion's File Upload API arrived after 2022-06-28. It is expected to work on that
 // version, but rather than guess we try the app's version first and fall back to a newer
@@ -264,12 +264,13 @@ exports.handler = async (event) => {
   // The related item isn't in the request, so read it off the RFI page to land the
   // entry on the right feed. Awaited deliberately — see the note in _activity-log.js.
   const who = respondedBy || "the consultant";
+  const { taskId, description } = await getRfiContext(token, notionId);
   await createActivityLogEntry(token, {
-    taskId: await getRelatedTaskId(token, notionId),
+    taskId,
     source: "RFI",
     tag:    "#response",
     author: "DM",
-    entry:  `${rfiRef(rfiNumber)} response received from ${who}.`
+    entry:  `${rfiLabel(rfiNumber, description)} — response received from ${who}.`
             + (attached ? ` ${attached} document${attached > 1 ? "s" : ""} attached.` : ""),
     detail: text,
     link:   pageUrl,

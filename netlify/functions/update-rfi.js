@@ -1,7 +1,7 @@
 const NOTION_VERSION = "2022-06-28";
 const HEADERS = { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" };
 // Optional env var NOTION_DB_ACTIVITY_LOG — closing an RFI posts a #decision entry
-const { createActivityLogEntry, getRelatedTaskId, rfiRef } = require("./_activity-log");
+const { createActivityLogEntry, relatedTaskId, rfiDescription, rfiLabel } = require("./_activity-log");
 
 exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: HEADERS, body: "" };
@@ -31,12 +31,14 @@ exports.handler = async (event) => {
     if (!res.ok) return { statusCode: res.status, headers: HEADERS, body: JSON.stringify({ error: data.message }) };
 
     // Post to the Item Activity Log. Awaited deliberately — see the note in _activity-log.js.
+    // `data` is the PATCH response, which is the full page — the related item and the
+    // description are already in hand, so no extra lookup round-trip is needed.
     await createActivityLogEntry(token, {
-      taskId: await getRelatedTaskId(token, notionId),
+      taskId: relatedTaskId(data),
       source: "RFI",
       tag:    "#decision",
       author: "DM",
-      entry:  `${rfiRef(rfiNumber)} closed out.`,
+      entry:  `${rfiLabel(rfiNumber, rfiDescription(data))} closed out.`,
       link:   data.url,
     });
 
