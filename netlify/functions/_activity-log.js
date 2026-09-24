@@ -58,35 +58,13 @@ async function getRelatedTaskId(token, rfiPageId) {
 }
 
 /**
- * The Log's Projects relation is DERIVED from the Item — never entered by hand — so a feed
- * filtered by project cannot disagree with one filtered by item. Returns null on any
- * failure; an entry without a project is still worth writing.
- */
-const projectIdCache = new Map();
-async function projectIdForTask(token, taskId) {
-  if (!taskId) return null;
-  if (projectIdCache.has(taskId)) return projectIdCache.get(taskId);
-  let id = null;
-  try {
-    const res = await fetch(`https://api.notion.com/v1/pages/${taskId}`, {
-      headers: { Authorization: `Bearer ${token}`, "Notion-Version": NOTION_VERSION },
-    });
-    if (res.ok) {
-      const page = await res.json();
-      id = page.properties?.["Projects"]?.relation?.[0]?.id || null;
-    }
-  } catch {
-    /* leave null */
-  }
-  projectIdCache.set(taskId, id);
-  return id;
-}
-
-/**
  * Write one Item Activity Log entry. Resolves to true when written, false otherwise.
- * `projectId` is optional: omit it and it is derived from taskId.
+ *
+ * Do NOT write Projects here. On 24 Sep 2026 the Log's Projects became a ROLLUP through
+ * Task: the project is computed from the item, so it cannot be written, cannot drift, and
+ * cannot be hand-edited into disagreeing with the Task relation.
  */
-async function createActivityLogEntry(token, { taskId, projectId, source, tag, author, entry, detail, link }) {
+async function createActivityLogEntry(token, { taskId, source, tag, author, entry, detail, link }) {
   if (!ACTIVITY_LOG_DB) {
     console.warn("[activity-log] NOTION_DB_ACTIVITY_LOG not configured — skipping entry:", entry);
     return false;
@@ -99,8 +77,6 @@ async function createActivityLogEntry(token, { taskId, projectId, source, tag, a
       "Author": { rich_text: [{ text: { content: truncateForNotion(author || "System") } }] },
     };
     if (taskId) properties["Task"]   = { relation: [{ id: taskId }] };
-    const projId = projectId !== undefined ? projectId : await projectIdForTask(token, taskId);
-    if (projId) properties["Projects"] = { relation: [{ id: projId }] };
     if (detail) properties["Detail"] = { rich_text: [{ text: { content: truncateForNotion(detail) } }] };
     if (link)   properties["Link"]   = { url: link };
 
@@ -147,7 +123,6 @@ function rfiLabel(n, description) {
 
 module.exports = {
   createActivityLogEntry,
-  projectIdForTask,
   getRfiContext,
   getRelatedTaskId,
   relatedTaskId,
