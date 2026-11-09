@@ -5,7 +5,7 @@
 // takes the highest RFI Number among RFIs whose Related Item(s) belongs to the project and
 // adds one. The Drawing Review Studio allocates numbers with the same rule.
 
-const { json, allRfis, projectItemIds } = require("./_rfi-common");
+const { json, allRfis, projectItemIds } = require("../lib/rfi-common");
 
 exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return json(204, "");

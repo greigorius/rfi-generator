@@ -4,7 +4,7 @@
 // Only RFIs still at "Raise" are editable; anything Open or later is returned with
 // editable:false and the app refuses to load it into the form.
 
-const { json, notion, plain, listChildren, blockText, headingIs, calloutEmoji } = require("./_rfi-common");
+const { json, notion, plain, listChildren, blockText, headingIs, calloutEmoji } = require("../lib/rfi-common");
 const { stripLeadingRef } = require("./_activity-log");
 
 exports.handler = async (event) => {

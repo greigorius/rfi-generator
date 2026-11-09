@@ -5,3 +5,5 @@ dist/
 .DS_Store
 *.log
 .netlify/
+
+_to_delete/
