@@ -34,7 +34,37 @@ const makeInitialForm = () => ({
   urgency: "Medium",
   additionalNotes: "",
   attachments: [],
+  stopsWork: false,
+  responseDue: "",
 });
+
+// Statuses an RFI can be saved at while it is being edited. Editing is only allowed up to
+// the point it is issued, so from the form it can stay at Raise or go to Open, nothing later.
+const EDIT_STATUS_OPTIONS = ["Raise", "Open"];
+
+// Category, source, urgency and the attachment images aren't Notion properties, so they
+// are kept in this browser against the Notion page id. Editing an RFI filed from this
+// browser then reloads them; one raised elsewhere (e.g. the Drawing Review Studio) starts
+// from the defaults.
+const META_KEY = "rfi-meta";
+const metaId = (id) => String(id || "").replace(/-/g, "");
+const readMeta = (id) => {
+  try { return JSON.parse(localStorage.getItem(META_KEY) || "{}")[metaId(id)] || null; } catch { return null; }
+};
+const writeMeta = (id, rfi) => {
+  const pick = (withFiles) => ({
+    category: rfi.category || "", source: rfi.source || "", urgency: rfi.urgency || "Medium",
+    ...(withFiles ? { attachments: rfi.attachments || [] } : {}),
+  });
+  for (const withFiles of [true, false]) {          // retry without images if storage is full
+    try {
+      const all = JSON.parse(localStorage.getItem(META_KEY) || "{}");
+      all[metaId(id)] = pick(withFiles);
+      localStorage.setItem(META_KEY, JSON.stringify(all));
+      return;
+    } catch {}
+  }
+};
 
 // Older drafts (in localStorage or in flight) stored a single `attachment`
 // object. Normalise everything to an `attachments` array so the rest of the
@@ -146,11 +176,13 @@ function ScoreBar({ score }) {
   );
 }
 
-function NotionRfiItem({ rfi, closeState, onCloseOut, onRespond, responded }) {
+function NotionRfiItem({ rfi, closeState, onCloseOut, onRespond, responded, onEdit, editLoading }) {
   const state = closeState || "idle";
   const closed = state === "closed";
   const closing = state === "loading";
   const hasResponse = responded || rfi.hasResponse;
+  // Editable until it's issued — only RFIs still at "Raise"
+  const editable = rfi.status === "Raise";
   return (
     <div style={{
       background: "#0d1117",
@@ -166,6 +198,8 @@ function NotionRfiItem({ rfi, closeState, onCloseOut, onRespond, responded }) {
           </span>
           <Badge color="#94a3b8">{rfi.status}</Badge>
           {rfi.tbcBy && <Badge color="#818cf8">{rfi.tbcBy}</Badge>}
+          {rfi.fromStudio && <Badge color="#c084fc">Review Studio</Badge>}
+          {rfi.stopsWork && <Badge color="#f87171">Stops work</Badge>}
           {hasResponse && <Badge color="#38bdf8">✓ Response</Badge>}
           {closed && <Badge color="#4ade80">✓ Closed</Badge>}
         </div>
@@ -182,6 +216,13 @@ function NotionRfiItem({ rfi, closeState, onCloseOut, onRespond, responded }) {
         )}
       </div>
       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+        {editable && (
+          <button onClick={() => !editLoading && onEdit(rfi)} disabled={editLoading} title="Edit — allowed until the RFI is issued (Open)" style={{
+            background: "#1a1a2e", border: "1px solid #6366f1", color: editLoading ? "#4a5568" : "#818cf8",
+            borderRadius: 3, padding: "5px 10px", fontSize: 10, fontWeight: 700,
+            fontFamily: "monospace", cursor: editLoading ? "default" : "pointer", letterSpacing: 1, textTransform: "uppercase"
+          }}>{editLoading ? "Loading…" : "✎ Edit"}</button>
+        )}
         <button onClick={() => window.open(rfi.notionUrl, "_blank")} style={{
           background: "#1e3a5f", border: "1px solid #2563eb", color: "#60a5fa",
           borderRadius: 3, padding: "5px 10px", fontSize: 10, fontWeight: 700,
@@ -679,8 +720,13 @@ export default function RFIGenerator() {
   });
   const [tab, setTab] = useState("form");
   const [exportRfi, setExportRfi] = useState(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState("");            // banner text after a save, "" = hidden
   const [editingId, setEditingId] = useState(null);
+  // A Notion RFI (still at Raise) loaded into the form: { notionId, notionUrl, attachmentNote, fromStudio }
+  const [editingNotion, setEditingNotion] = useState(null);
+  const [notionEditLoading, setNotionEditLoading] = useState(null);   // notionId being fetched
+  const [notionSave, setNotionSave] = useState({ kind: "idle" });     // saving | error
+  const [nextNumber, setNextNumber] = useState(null);                 // suggested RFI No. for the project
   const [logoDataUrl, setLogoDataUrl] = useState(null);
   const fileInputRef = useRef();
 
@@ -740,16 +786,38 @@ export default function RFIGenerator() {
     if (!selectedProject?.id) { setRelatedItems([]); return; }
     setRelatedItemsLoading(true);
     setRelatedItems([]);
-    setForm(f => ({ ...f, relatedItemId: "", relatedItemName: "" }));
     fetch("/.netlify/functions/get-project-items", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ projectId: selectedProject.id }),
     })
       .then(r => r.json())
-      .then(data => { setRelatedItems(data.items || []); setRelatedItemsLoading(false); })
+      .then(data => {
+        const items = data.items || [];
+        setRelatedItems(items);
+        setRelatedItemsLoading(false);
+        // Keep the item when it belongs to this project (an RFI or draft being edited);
+        // clear it when the project has been switched away from it.
+        setForm(f => items.some(i => i.id === f.relatedItemId) ? f : { ...f, relatedItemId: "", relatedItemName: "" });
+      })
       .catch(() => setRelatedItemsLoading(false));
-  }, [form.project]);
+  }, [form.project, projects]);
+
+  // Suggest the next RFI number for the project (numbers run per project)
+  useEffect(() => {
+    setNextNumber(null);
+    const selectedProject = projects.find(p => p.name === form.project);
+    if (!selectedProject?.id) return;
+    let live = true;
+    fetch("/.netlify/functions/get-next-rfi-number", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: selectedProject.id }),
+    })
+      .then(r => r.json())
+      .then(data => { if (live && data.next) setNextNumber(data.next); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [form.project, projects]);
 
   // Fetch open RFIs from Notion when queue tab is active
   useEffect(() => {
@@ -775,17 +843,114 @@ export default function RFIGenerator() {
     } else {
       setQueue(q => [{ ...form, id: Date.now() }, ...q]);
     }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    flash(editingId ? "RFI updated" : "RFI saved to draft queue — switch to Queue tab to file or export");
     setForm(makeInitialForm());
     setTab("queue");
   };
 
+  const flash = (msg) => { setSaved(msg); setTimeout(() => setSaved(""), 3000); };
+
+  // Starting a new edit while a draft is open in the form puts that draft back in the queue
+  // (it was lifted out of the queue when its edit started), so nothing is lost.
+  const releaseCurrentEdit = () => {
+    if (editingId) setQueue(q => [{ ...form, id: editingId }, ...q]);
+    setEditingId(null);
+    setEditingNotion(null);
+    setNotionSave({ kind: "idle" });
+  };
+
   const handleEdit = (rfi) => {
+    releaseCurrentEdit();
     setForm({ ...makeInitialForm(), ...normaliseAttachments(rfi) });
     setEditingId(rfi.id);
     setQueue(q => q.filter(r => r.id !== rfi.id));
     setTab("form");
+  };
+
+  // Load an RFI that's still at "Raise" in Notion into the form
+  const handleEditNotion = async (notionRfi) => {
+    setNotionEditLoading(notionRfi.notionId);
+    try {
+      const res = await fetch("/.netlify/functions/get-rfi", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notionId: notionRfi.notionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(data.error || `Couldn't load the RFI (HTTP ${res.status}).`); return; }
+      if (!data.editable) { alert(`RFI-${String(data.rfi.rfiNumber || "?").padStart(3, "0")} is ${data.rfi.status} in Notion — RFIs can only be edited until they're issued.`); return; }
+      const r = data.rfi, meta = readMeta(r.notionId);
+      releaseCurrentEdit();
+      // An RFI on a project that's no longer active still needs to show in the dropdown
+      if (r.project && !projects.some(p => p.name === r.project)) setProjects(ps => [...ps, { id: r.projectId || null, name: r.project }]);
+      setForm({
+        ...makeInitialForm(),
+        rfiNumber: r.rfiNumber === "" ? "" : String(r.rfiNumber),
+        rfiTitle: r.rfiTitle,
+        dateRaised: r.dateRaised || makeInitialForm().dateRaised,
+        status: "Raise",
+        project: r.project,
+        relatedItemId: r.relatedItemId,
+        relatedItemName: r.relatedItemName,
+        description: r.description,
+        tbcBy: r.tbcBy,
+        additionalNotes: r.additionalNotes,
+        stopsWork: r.stopsWork,
+        responseDue: r.responseDue,
+        category: meta?.category || "",
+        source: meta?.source || (r.fromStudio ? "Drawing Comment" : ""),
+        urgency: meta?.urgency || "Medium",
+        attachments: meta?.attachments || [],
+      });
+      setEditingNotion({ notionId: r.notionId, notionUrl: r.notionUrl, attachmentNote: r.attachmentNote, fromStudio: r.fromStudio });
+      setTab("form");
+      window.scrollTo(0, 0);
+    } catch {
+      alert("Network error — is the app deployed?");
+    } finally {
+      setNotionEditLoading(null);
+    }
+  };
+
+  const cancelNotionEdit = () => {
+    setEditingNotion(null);
+    setNotionSave({ kind: "idle" });
+    setForm(makeInitialForm());
+    setTab("queue");
+  };
+
+  const handleSaveNotionEdit = async () => {
+    if (!form.rfiNumber || !form.rfiTitle || !form.project || !form.description || !form.tbcBy) {
+      alert("Please fill in RFI Number, Project, Subject, Description, and TBC By before saving.");
+      return;
+    }
+    if (form.status === "Open" && !window.confirm(`Issue RFI-${String(form.rfiNumber).padStart(3, "0")}? Once it's Open it can't be edited here any more.`)) return;
+    setNotionSave({ kind: "saving" });
+    try {
+      const res = await fetch("/.netlify/functions/edit-rfi", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...form,
+          notionId: editingNotion.notionId,
+          attachments: (form.attachments || []).map(a => ({ name: a.name, type: a.type, caption: a.caption || "" })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setNotionSave({ kind: "error", message: data.error || `Failed (HTTP ${res.status})` }); return; }
+      writeMeta(editingNotion.notionId, form);
+      const id = editingNotion.notionId;
+      setNotionRfis(list => list.map(r => r.notionId === id ? {
+        ...r, rfiNumber: Number(form.rfiNumber), rfiTitle: `RFI-${String(form.rfiNumber).padStart(3, "0")} — ${form.rfiTitle}`,
+        status: form.status, tbcBy: form.tbcBy, dateRaised: form.dateRaised, project: form.project, stopsWork: form.stopsWork,
+      } : r));
+      flash(`RFI-${String(form.rfiNumber).padStart(3, "0")} ${form.status === "Open" ? "issued — now Open in Notion" : "updated in Notion"}`
+        + ((data.warnings || []).length ? ` · ${data.warnings[0]}` : ""));
+      setEditingNotion(null);
+      setNotionSave({ kind: "idle" });
+      setForm(makeInitialForm());
+      setTab("queue");
+    } catch {
+      setNotionSave({ kind: "error", message: "Network error — is the app deployed?" });
+    }
   };
 
   const handleRemove = (id) => setQueue(q => q.filter(r => r.id !== id));
@@ -803,7 +968,10 @@ export default function RFIGenerator() {
       });
       const data = await res.json();
       if (!res.ok) setNotionState(s => ({ ...s, [rfi.id]: { state: "error", message: data.error } }));
-      else setNotionState(s => ({ ...s, [rfi.id]: { state: "success", url: data.url } }));
+      else {
+        setNotionState(s => ({ ...s, [rfi.id]: { state: "success", url: data.url } }));
+        if (data.id) writeMeta(data.id, rfi);   // so the RFI reopens with its category, source and images
+      }
     } catch {
       setNotionState(s => ({ ...s, [rfi.id]: { state: "error", message: "Network error — is the app deployed?" } }));
     }
@@ -936,12 +1104,24 @@ export default function RFIGenerator() {
 
       {saved && (
         <div style={{ background: "#16a34a22", borderBottom: "1px solid #16a34a55", color: "#4ade80", padding: "10px 24px", fontSize: 11, fontFamily: "monospace", letterSpacing: 1 }}>
-          ✓ {editingId ? "RFI updated" : "RFI saved to draft queue"} — switch to Queue tab to file or export
+          ✓ {saved}
         </div>
       )}
       {editingId && (
         <div style={{ background: "#6366f122", borderBottom: "1px solid #6366f155", color: "#818cf8", padding: "8px 24px", fontSize: 11, fontFamily: "monospace", letterSpacing: 1 }}>
           ✎ Editing RFI-{String(form.rfiNumber).padStart(3, "0")} — make your changes and save back to queue
+        </div>
+      )}
+      {editingNotion && (
+        <div style={{ background: "#c084fc1a", borderBottom: "1px solid #c084fc55", color: "#d8b4fe", padding: "8px 24px", fontSize: 11, fontFamily: "monospace", letterSpacing: 1, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ flex: 1, minWidth: 240 }}>
+            ✎ Editing RFI-{String(form.rfiNumber || "?").padStart(3, "0")} in Notion — still at Raise, so it can be changed until it's issued.
+            {editingNotion.fromStudio && " Raised from the Drawing Review Studio."}
+          </span>
+          <button onClick={() => window.open(editingNotion.notionUrl, "_blank")} style={{
+            background: "transparent", border: "1px solid #c084fc77", color: "#d8b4fe", borderRadius: 3,
+            padding: "3px 8px", fontSize: 9, fontFamily: "monospace", cursor: "pointer", letterSpacing: 1, textTransform: "uppercase"
+          }}>View ↗</button>
         </div>
       )}
 
@@ -955,13 +1135,19 @@ export default function RFIGenerator() {
               <SectionDivider n="01" label="IDENTITY" />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
                 <Field label="RFI Number" required>
-                  <input type="number" value={form.rfiNumber} onChange={e => set("rfiNumber", e.target.value)} placeholder="e.g. 042" style={inputStyle} />
+                  <input type="number" value={form.rfiNumber} onChange={e => set("rfiNumber", e.target.value)} placeholder={nextNumber ? String(nextNumber).padStart(3, "0") : "e.g. 042"} style={inputStyle} />
+                  {nextNumber && String(form.rfiNumber) !== String(nextNumber) && (
+                    <button onClick={() => set("rfiNumber", String(nextNumber))} title="Highest RFI number on this project + 1" style={{
+                      marginTop: 5, background: "transparent", border: "1px solid #21303f", color: "#38bdf8",
+                      borderRadius: 3, padding: "2px 7px", fontSize: 9, fontFamily: "monospace", cursor: "pointer", letterSpacing: 0.5,
+                    }}>Next on project: {String(nextNumber).padStart(3, "0")} ↵</button>
+                  )}
                 </Field>
                 <Field label="Date Raised">
                   <input type="date" value={form.dateRaised} onChange={e => set("dateRaised", e.target.value)} style={inputStyle} />
                 </Field>
                 <Field label="RFI Status">
-                  <SelectField value={form.status} onChange={v => set("status", v)} options={STATUS_OPTIONS} />
+                  <SelectField value={form.status} onChange={v => set("status", v || "Raise")} options={editingNotion ? EDIT_STATUS_OPTIONS : STATUS_OPTIONS} />
                 </Field>
               </div>
               <Field label="Project" required hint="Select from active Notion projects">
@@ -1025,8 +1211,19 @@ export default function RFIGenerator() {
                   rows={6} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.6 }} />
               </Field>
               <Field label="TBC By" required hint="Who must respond?">
-                <SelectField value={form.tbcBy} onChange={v => set("tbcBy", v)} options={TBC_OPTIONS} placeholder="Select responsible party..." />
+                <SelectField value={form.tbcBy} onChange={v => set("tbcBy", v)} options={[...TBC_OPTIONS, "Supplier"]} placeholder="Select responsible party..." />
               </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <Field label="Response Due" hint="optional">
+                  <input type="date" value={form.responseDue || ""} onChange={e => set("responseDue", e.target.value)} style={inputStyle} />
+                </Field>
+                <Field label="Stops Work" hint="holds the item until answered">
+                  <label style={{ ...inputStyle, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!form.stopsWork} onChange={e => set("stopsWork", e.target.checked)} />
+                    <span style={{ fontSize: 12, color: form.stopsWork ? "#f87171" : "#4a5568" }}>{form.stopsWork ? "Yes — item on hold" : "No"}</span>
+                  </label>
+                </Field>
+              </div>
               <Field label="Urgency">
                 <div style={{ display: "flex", gap: 6 }}>
                   {URGENCY_OPTIONS.map(opt => (
@@ -1122,9 +1319,54 @@ export default function RFIGenerator() {
                   </div>
                 </>
               )}
+              {editingNotion?.attachmentNote && attachments.length === 0 && (
+                <div style={{ marginTop: 10, fontSize: 10, color: "#4a5568", fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
+                  Already listed on the Notion page: {editingNotion.attachmentNote}
+                  {"\n"}Images aren't stored in Notion — add them again here if you need them on the export.
+                </div>
+              )}
             </div>
 
             {/* Actions */}
+            {editingNotion ? (
+              <>
+                {notionSave.kind === "error" && (
+                  <div style={{ padding: "9px 12px", background: "#1a0a0a", border: "1px solid #dc262655", borderRadius: 4, marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: "#f87171", fontFamily: "monospace" }}>✕ {notionSave.message}</div>
+                  </div>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, paddingTop: 8, borderTop: "1px solid #21303f" }}>
+                  <button onClick={() => notionSave.kind !== "saving" && handleSaveNotionEdit()} disabled={notionSave.kind === "saving"} style={{
+                    background: form.status === "Open" ? "#1a2e1a" : "#2a1a3a",
+                    border: `1px solid ${form.status === "Open" ? "#16a34a" : "#c084fc"}`,
+                    color: form.status === "Open" ? "#4ade80" : "#d8b4fe",
+                    borderRadius: 4, padding: "14px", fontSize: 12, fontWeight: 700,
+                    fontFamily: "monospace", cursor: notionSave.kind === "saving" ? "default" : "pointer", letterSpacing: 1.5, textTransform: "uppercase"
+                  }}>{notionSave.kind === "saving" ? "Saving…" : form.status === "Open" ? "→ Save & Issue" : "→ Save to Notion"}</button>
+                  <button onClick={() => {
+                    if (!form.rfiNumber || !form.rfiTitle || !form.project || !form.description || !form.tbcBy) {
+                      alert("Complete required fields (RFI Number, Project, Subject, Description, TBC By) first.");
+                      return;
+                    }
+                    setExportRfi({ ...form, id: editingNotion.notionId });
+                  }} style={{
+                    background: "#0d1117", border: "1px solid #374151", color: "#6b7280",
+                    borderRadius: 4, padding: "14px", fontSize: 12, fontWeight: 700,
+                    fontFamily: "monospace", cursor: "pointer", letterSpacing: 1.5, textTransform: "uppercase"
+                  }}>Preview and Export</button>
+                  <button onClick={cancelNotionEdit} style={{
+                    background: "transparent", border: "1px solid #374151", color: "#6b7280",
+                    borderRadius: 4, padding: "14px", fontSize: 12, fontWeight: 700,
+                    fontFamily: "monospace", cursor: "pointer", letterSpacing: 1.5, textTransform: "uppercase"
+                  }}>Cancel</button>
+                </div>
+                <div style={{ marginTop: 10, padding: "9px 12px", background: "#0d1117", border: "1px solid #21303f", borderRadius: 4 }}>
+                  <div style={{ fontSize: 10, color: "#374151" }}>
+                    Saves straight over the Notion RFI · leave status at <span style={{ color: "#facc15" }}>Raise</span> to keep editing later, set it to <span style={{ color: "#4ade80" }}>Open</span> to issue it (locks editing)
+                  </div>
+                </div>
+              </>
+            ) : (<>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, paddingTop: 8, borderTop: "1px solid #21303f" }}>
               <button onClick={handleAddToDraft} style={{
                 background: editingId ? "#1a1a2e" : "#0d1f33",
@@ -1150,6 +1392,7 @@ export default function RFIGenerator() {
                 Required: RFI Number, Project, Subject, Description, TBC By · Drafts persist across page refreshes
               </div>
             </div>
+            </>)}
           </>
         )}
 
@@ -1230,6 +1473,8 @@ export default function RFIGenerator() {
                               onCloseOut={handleCloseOut}
                               onRespond={setRespondRfi}
                               responded={!!respondedIds[rfi.notionId]}
+                              onEdit={handleEditNotion}
+                              editLoading={notionEditLoading === rfi.notionId}
                             />
                           ))}
                         </div>

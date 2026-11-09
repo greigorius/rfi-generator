@@ -44,6 +44,9 @@ exports.handler = async (event) => {
         hasResponse:  !!responseText || (p.properties["Response Attachments"]?.files || []).length > 0,
         dateResponded: p.properties["Date Responded"]?.date?.start || "",
         respondedBy:   p.properties["Responded By"]?.select?.name || "",
+        stopsWork:     !!p.properties["Stops Work"]?.checkbox,
+        // RFIs raised from the Drawing Review Studio link the MDS drawing; the app's own don't
+        fromStudio:    (p.properties["Drawing"]?.relation || []).length > 0,
       };
     });
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rfis }) };

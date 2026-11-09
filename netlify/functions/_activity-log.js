@@ -23,9 +23,11 @@ const truncateForNotion = (str, max = 1900) =>
 const relatedTaskId = (page) =>
   page?.properties?.["Related Item(s)"]?.relation?.[0]?.id || null;
 
-/** Pull the RFI Description rich_text off an already-fetched Notion page object. */
+/** Pull the RFI Description off an already-fetched Notion page object.
+ *  It is the DB's title property, so the text lives under `title`; `rich_text` is kept
+ *  as a fallback in case the property type is ever changed back. */
 const rfiDescription = (page) =>
-  (page?.properties?.["RFI Description"]?.rich_text || [])
+  (page?.properties?.["RFI Description"]?.title || page?.properties?.["RFI Description"]?.rich_text || [])
     .map((t) => t?.plain_text || "")
     .join("")
     .trim();

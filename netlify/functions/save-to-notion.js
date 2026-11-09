@@ -70,6 +70,12 @@ exports.handler = async (event) => {
     "Date Raised": rfi.dateRaised
       ? { date: { start: rfi.dateRaised } }
       : undefined,
+    "Stops Work": typeof rfi.stopsWork === "boolean"
+      ? { checkbox: rfi.stopsWork }
+      : undefined,
+    "Response Due": rfi.responseDue
+      ? { date: { start: rfi.responseDue } }
+      : undefined,
     // Relation — links to the Tasks DB entry, which auto-populates the Project rollup
     "Related Item(s)": rfi.relatedItemId
       ? { relation: [{ id: rfi.relatedItemId }] }
