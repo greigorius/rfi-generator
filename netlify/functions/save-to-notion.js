@@ -6,7 +6,7 @@
 //   NOTION_DB_ACTIVITY_LOG — Item Activity Log DB; raising an RFI posts a #query entry
 
 const NOTION_VERSION = "2022-06-28";
-const { createActivityLogEntry, rfiLabel } = require("./_activity-log");
+const { createActivityLogEntry, rfiLabel } = require("../lib/activity-log");
 
 exports.handler = async (event) => {
   // CORS headers so the browser can call this from any origin during local dev

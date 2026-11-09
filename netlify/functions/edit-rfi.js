@@ -13,7 +13,7 @@
 // Optional env var NOTION_DB_ACTIVITY_LOG — Raise → Open posts a #query "issued" entry.
 
 const { json, notion, richText, rfiTitle, listChildren, headingIs, calloutEmoji } = require("../lib/rfi-common");
-const { createActivityLogEntry, rfiLabel } = require("./_activity-log");
+const { createActivityLogEntry, rfiLabel } = require("../lib/activity-log");
 
 const EDITABLE_TO = ["Raise", "Open"];
 

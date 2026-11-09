@@ -14,7 +14,7 @@
 //                    NOTION_DB_ACTIVITY_LOG  (saving a response posts a #response entry)
 
 const NOTION_VERSION = "2022-06-28";
-const { createActivityLogEntry, getRfiContext, rfiLabel } = require("./_activity-log");
+const { createActivityLogEntry, getRfiContext, rfiLabel } = require("../lib/activity-log");
 
 // Notion's File Upload API arrived after 2022-06-28. It is expected to work on that
 // version, but rather than guess we try the app's version first and fall back to a newer

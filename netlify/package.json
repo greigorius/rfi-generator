@@ -1,0 +1,4 @@
+{
+  "//": "Netlify functions and their helpers are CommonJS (require/module.exports); the root package.json is type:module for Vite.",
+  "type": "commonjs"
+}

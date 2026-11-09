@@ -5,7 +5,7 @@
 // editable:false and the app refuses to load it into the form.
 
 const { json, notion, plain, listChildren, blockText, headingIs, calloutEmoji } = require("../lib/rfi-common");
-const { stripLeadingRef } = require("./_activity-log");
+const { stripLeadingRef } = require("../lib/activity-log");
 
 exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return json(204, "");
